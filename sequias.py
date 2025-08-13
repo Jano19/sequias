@@ -487,25 +487,6 @@ def build_model_config():
 
 MODEL_CONFIG = build_model_config()
 
-def _mask_limpio_xy(X, y):
-    Xnum = X.replace([np.inf, -np.inf], np.nan)
-    m = Xnum.notna().all(axis=1) & pd.Series(y).notna()
-    return Xnum.loc[m], pd.Series(y).loc[m]
-
-def _safe_fit_resample(sampler, X, y):
-    """Intenta SMOTE; si falla por validación, castea a numpy y reintenta."""
-    try:
-        return sampler.fit_resample(X, y)
-    except AttributeError as e:
-        # Algunos entornos rompen _validate_data; probamos con numpy
-        X_np = np.asarray(X, dtype=float)
-        y_np = np.asarray(y).astype(int)
-        return sampler.fit_resample(X_np, y_np)
-    except ValueError as e:
-        st.warning(f"No se pudo aplicar SMOTE: {e}")
-        return X, y
-
-
 # =====================
 # SMOTE ADAPTATIVO (nuevo)
 # =====================
@@ -527,6 +508,26 @@ def _smote_adaptativo(y, random_state=42, base_k=5):
     except Exception:
         return None
 
+
+
+# === Helpers robustos para SMOTE (limpieza y fallback) ===
+def _mask_limpio_xy(X, y):
+    Xnum = X.replace([np.inf, -np.inf], np.nan)
+    m = Xnum.notna().all(axis=1) & pd.Series(y).notna()
+    return Xnum.loc[m], pd.Series(y).loc[m]
+
+def _safe_fit_resample(sampler, X, y):
+    """Intenta SMOTE; si falla por validación, castea a numpy y reintenta."""
+    try:
+        return sampler.fit_resample(X, y)
+    except AttributeError as e:
+        # Algunos entornos rompen _validate_data; probamos con numpy
+        X_np = np.asarray(X, dtype=float)
+        y_np = np.asarray(y).astype(int)
+        return sampler.fit_resample(X_np, y_np)
+    except ValueError as e:
+        st.warning(f"No se pudo aplicar SMOTE: {e}")
+        return X, y
 # =====================
 # ENTRENAMIENTO / EVAL
 # =====================
@@ -1440,28 +1441,22 @@ def main():
             if not found:
                 st.warning("El conjunto de prueba no contiene ambas clases. Algunas métricas se mostrarán como N/A.")
 
-        # Balanceo opcional con SMOTE ADAPTATIVO (con limpieza y fallback)
+        # Balanceo opcional con SMOTE ADAPTATIVO
         if balancear and _has_both_classes(y_train):
-            # Limpieza antes de SMOTE (evita NaN/Inf)
-            X_train, y_train = _mask_limpio_xy(X_train, y_train)
-            if X_cal is not None and _has_both_classes(y_cal):
-                X_cal, y_cal = _mask_limpio_xy(X_cal, y_cal)
-        
             sm_tr = _smote_adaptativo(y_train, random_state=random_state, base_k=5)
             if sm_tr is not None:
-                X_train, y_train = _safe_fit_resample(sm_tr, X_train, y_train)
+                X_train, y_train = sm_tr.fit_resample(X_train, y_train)
             else:
-                st.warning("No se aplicó SMOTE en entrenamiento: clase minoritaria demasiado pequeña o k inválido.")
-        
+                st.warning("No se aplicó SMOTE en entrenamiento: clase minoritaria demasiado pequeña.")
+
             if X_cal is not None and _has_both_classes(y_cal):
                 sm_cal = _smote_adaptativo(y_cal, random_state=random_state, base_k=5)
                 if sm_cal is not None:
-                    X_cal, y_cal = _safe_fit_resample(sm_cal, X_cal, y_cal)
+                    X_cal, y_cal = sm_cal.fit_resample(X_cal, y_cal)
                 else:
-                    st.warning("No se aplicó SMOTE en calibración: clase minoritaria demasiado pequeña o k inválido.")
+                    st.warning("No se aplicó SMOTE en calibración: clase minoritaria demasiado pequeña.")
         elif balancear:
             st.info("No se aplica SMOTE: el conjunto de entrenamiento no contiene ambas clases.")
-
 
         # Entrenamiento
         scoring_choice = 'f1'
@@ -1760,4 +1755,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
