@@ -1,0 +1,6 @@
+__pycache__/
+.cache_nasa/
+.streamlit/
+*.pkl
+*.xlsx
+*.pdf
