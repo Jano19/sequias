@@ -1343,7 +1343,7 @@ def main():
         "🤖 Modelado",
         "📈 Resultados",
         "🧪 Estadística",
-        #"🔎 Interpretabilidad (opcional)",
+        "🔎 Interpretabilidad (opcional)",
         "💾 Exportar"
     ])
 
