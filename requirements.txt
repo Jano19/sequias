@@ -24,6 +24,7 @@ XlsxWriter>=3.2
 
 # Optional stats post-hoc
 scikit-posthocs==0.9.0
+shap
 
 # PDF
 reportlab>=4.2
