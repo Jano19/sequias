@@ -508,26 +508,6 @@ def _smote_adaptativo(y, random_state=42, base_k=5):
     except Exception:
         return None
 
-
-
-# === Helpers robustos para SMOTE (limpieza y fallback) ===
-def _mask_limpio_xy(X, y):
-    Xnum = X.replace([np.inf, -np.inf], np.nan)
-    m = Xnum.notna().all(axis=1) & pd.Series(y).notna()
-    return Xnum.loc[m], pd.Series(y).loc[m]
-
-def _safe_fit_resample(sampler, X, y):
-    """Intenta SMOTE; si falla por validación, castea a numpy y reintenta."""
-    try:
-        return sampler.fit_resample(X, y)
-    except AttributeError as e:
-        # Algunos entornos rompen _validate_data; probamos con numpy
-        X_np = np.asarray(X, dtype=float)
-        y_np = np.asarray(y).astype(int)
-        return sampler.fit_resample(X_np, y_np)
-    except ValueError as e:
-        st.warning(f"No se pudo aplicar SMOTE: {e}")
-        return X, y
 # =====================
 # ENTRENAMIENTO / EVAL
 # =====================
@@ -925,13 +905,14 @@ def viz_residual_tests(resultados):
             if resid is None:
                 continue
             r = pd.Series(resid)
-            if len(r) <= 5000:
+            if len(r) <= 50:
                 stat, p = shapiro(r)
                 testname = "Shapiro-Wilk"
             else:
                 stat, p = normaltest(r)
                 testname = "D'Agostino-Pearson"
-            st.markdown(f"**{name}** — {testname}: estadístico={stat:.3f}, p={p:.4f}")
+            #st.markdown(f"**{name}** — {testname}: estadístico={stat:.3f}, p={p}")
+            st.markdown(f"**{name}** — {testname}: estadístico={stat:.3f}, p={_p_fmt(p)}")
         st.caption("p<0.05 sugiere desviación de normalidad (esperable en residuos de clasificación).")
 
 # =====================
@@ -944,7 +925,40 @@ def _fmt(x, n=2):
         return f"{float(x):.{n}f}"
     except Exception:
         return str(x)
-
+    
+def _p_fmt(p, small=1e-3):
+    """Formato estándar para p-valores: científico si es muy pequeño."""
+    try:
+        if p is None or (isinstance(p, float) and (np.isnan(p) or np.isinf(p))):
+            return "N/A"
+        p = float(p)
+        return f"{p:.2e}" if p < small else f"{p:.4f}"
+    except Exception:
+        return str(p)
+    
+def _p_fmt_pdf(p, ndigits=2):
+    try:
+        if p < 1e-300:
+            return "<1e-300"
+        elif p < 0.001:
+            return f"{p:.{ndigits}e}"
+        else:
+            return f"{p:.{ndigits}f}"
+    except Exception:
+        return str(p)
+    
+def _p_sci(p, floor=1e-300, ndigits=2):
+    """Devuelve p en notación científica; si viene 0.0 por underflow, muestra '<floor'."""
+    try:
+        import numpy as np
+        val = float(np.asarray(p).item())
+    except Exception:
+        # Si no se puede convertir, devuélvelo tal cual (no rompemos nada)
+        return str(p)
+    if val == 0.0 or (val is not None and val < floor):
+        return f"<{floor:.0e}"
+    return f"{val:.{ndigits}e}"
+    
 def _mk_table(data, col_widths=None, repeat_rows=1, font_size=8.8):
     t = Table(data, colWidths=col_widths, repeatRows=repeat_rows)
     t.setStyle(TableStyle([
@@ -1092,7 +1106,13 @@ def generar_reporte_pdf(
         story += [Paragraph(f"Estrategia de umbral: {thr_strategy_text}" + \
                             (f" (Recall mínimo exigido = {recall_min_req:.2f})" if recall_min_req else ""),
                             styles['Body'])]
-    story += [Spacer(1, 8)]
+    #story += [Spacer(1, 8)]
+    story += [Paragraph(
+        "Nota: Las importancias por permutación pueden tomar valores negativos por variación muestral o efectos de calibración. "
+        "Interpretar el ranking relativo (mayor valor absoluto → mayor relevancia) más que el signo.",
+        styles['Body']
+    )]
+    story += [Spacer(1, 6)]
 
     story += [Paragraph("Resumen ejecutivo", styles['H2'])]
     story += [Paragraph(
@@ -1159,7 +1179,11 @@ def generar_reporte_pdf(
             story += [Spacer(1, 4)]
             story += [Paragraph("Interpretación automática de la matriz de confusión", styles['Body'])]
             for line in _interpret_confusion(cmat):
-                story += [Paragraph(line, styles['Body'])]
+                #story += [Paragraph(line, styles['Body'])]
+                story += [Paragraph(
+                    "Siguiente paso sugerido: ajustar el umbral ligeramente al alza (+0.02~0.05) o ponderar costo FP>FN para reducir falsas alarmas manteniendo Recall ≥ objetivo.",
+                    styles['Body']
+                )]
             story += [Spacer(1, 6)]
 
         # Tasas detalladas (TPR/FPR/FNR/TNR/Prevalencia)
@@ -1193,12 +1217,22 @@ def generar_reporte_pdf(
 
         if resultados.get(best_name, {}).get('residuos_prob', None) is not None:
             r = pd.Series(resultados[best_name]['residuos_prob'])
-            if len(r) <= 5000:
-                stat, p = shapiro(r); testname = "Shapiro‑Wilk"
+            if len(r) <= 50:
+                stat, p = shapiro(r); testname = "Shapiro-Wilk"
             else:
-                stat, p = normaltest(r); testname = "D'Agostino‑Pearson"
-            story += [Paragraph(f"Normalidad de residuos (y−p): {testname} → estadístico={_fmt(stat,3)}, p={_fmt(p,4)}", styles['Body'])]
+                stat, p = normaltest(r); testname = "D'Agostino-Pearson"
+            story += [Paragraph(
+                f"Normalidad de residuos (y−p): {testname} → estadístico={stat:.3f}, p={p:.2e}",
+                styles['Body']
+            )]
+
+            # Regla de decisión explícita
+            story += [Paragraph(
+                f"Criterio: α=0.05. Si p<α → se rechaza normalidad. Resultado: p={_p_fmt(p)} → residuos no normales.",
+                styles['Body']
+            )]
             story += [Spacer(1, 6)]
+
 
     if df_levene is not None or df_kw is not None:
         story += [Paragraph("Pruebas estadísticas descriptivas", styles['H2'])]
@@ -1207,7 +1241,8 @@ def generar_reporte_pdf(
             story += [Paragraph("Levene (homocedasticidad) entre Sequía vs No-sequía", styles['Body'])]
             data_lv = [["Variable","W","p"]]
             for _, r in df_levene.iterrows():
-                data_lv.append([r['variable'], _fmt(r['W'],3), _fmt(r['p_levene'],4)])
+                #data_lv.append([r['variable'], _fmt(r['W'],3), _fmt(r['p_levene'],4)])
+                data_lv.append([r['variable'], _fmt(r['W'],3), _p_fmt(r['p_levene'])])
             story += [_mk_table(data_lv, col_widths=[6*RL_CM,3*RL_CM,3*RL_CM], repeat_rows=1)]
             story += [Spacer(1, 4)]
 
@@ -1215,7 +1250,8 @@ def generar_reporte_pdf(
             story += [Paragraph("Kruskal–Wallis por estaciones (1..4)", styles['Body'])]
             data_kw = [["Variable","H","p"]]
             for _, r in df_kw.iterrows():
-                data_kw.append([r['variable'], _fmt(r['H'],3), _fmt(r['p_kw'],4)])
+                #data_kw.append([r['variable'], _fmt(r['H'],3), _fmt(r['p_kw'],4)])
+                data_kw.append([r['variable'], _fmt(r['H'],3), _p_fmt_pdf(r['p_kw'])])
             story += [_mk_table(data_kw, col_widths=[6*RL_CM,3*RL_CM,3*RL_CM], repeat_rows=1)]
             story += [Spacer(1, 4)]
 
@@ -1367,11 +1403,30 @@ def main():
         with st.expander("🧪 Pruebas estadísticas descriptivas (Levene, Kruskal–Wallis, Dunn)", expanded=False):
             df_levene, df_kw, dunn_results = _compute_descriptive_tests(df, num_cols)
             st.markdown("**Levene (Sequía vs No-sequía)** — p<0.05 sugiere varianzas distintas")
-            st.dataframe(df_levene.round(4), use_container_width=True)
-
-            st.markdown("**Kruskal–Wallis por Estaciones** — p<0.05 sugiere distribuciones distintas entre estaciones")
-            st.dataframe(df_kw.round(4), use_container_width=True)
-
+            #st.dataframe(df_levene.round(4), use_container_width=True)
+            # Levene
+            if not df_levene.empty:
+                df_show_lv = df_levene.copy()
+                df_show_lv['W'] = df_show_lv['W'].round(3)
+                df_show_lv['p_levene'] = df_show_lv['p_levene'].apply(lambda v: _p_fmt(v))
+                st.dataframe(df_show_lv.rename(columns={'variable':'Variable','p_levene':'p'}), use_container_width=True)
+            st.markdown("**Kruskal-Wallis por Estaciones** - p<0.05 sugiere distribuciones distintas entre estaciones")
+            #st.dataframe(df_kw.round(4), use_container_width=True)
+            # Kruskal–Wallis
+            if not df_kw.empty:
+                df_show_kw = df_kw.copy()
+                # No redondeamos toda la tabla; sólo dejamos H con 3 decimales
+                if "H" in df_show_kw.columns:
+                    df_show_kw["H"] = df_show_kw["H"].round(3)
+                # Formateamos p de Kruskal con el helper nuevo
+                if "p_kw" in df_show_kw.columns:
+                    df_show_kw["p_kw"] = df_show_kw["p_kw"].apply(_p_sci)
+                st.dataframe(
+                    df_show_kw.rename(columns={"variable": "Variable", "p_kw": "p"}),
+                    use_container_width=True
+                )
+            else:
+                st.info("No hay suficientes datos para Kruskal–Wallis (≥2 grupos con n>2).")
             vars_ph = [c for c in (df_kw['variable'].tolist() if not df_kw.empty else []) if dunn_results.get(c) is not None]
             if len(vars_ph) > 0:
                 var_sel = st.selectbox("Ver Post‑hoc Dunn para la variable:", vars_ph, index=0)
